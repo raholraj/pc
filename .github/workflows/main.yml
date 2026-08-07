@@ -40,10 +40,26 @@ jobs:
           echo "=== Files from ZIP ==="
           find cpp_studio/ -type f | sort
 
-      # ── 5. Generate full Android scaffold ────────────────────────────────
-      #   ZIP mein sirf AndroidManifest + 1 xml tha. Baaki sab missing tha:
+      # ── 5. FIX: Dart type error in settings_screen.dart ──────────────────
+      #   _DropdownRow.onChanged = ValueChanged<String?> (nullable)
+      #   settings.setCompiler / setCppStandard = void Function(String) (non-null)
+      #   Fix: wrap with lambda so v! asserts non-null before passing
+      - name: Fix Dart type errors in settings_screen.dart
+        working-directory: cpp_studio
+        run: |
+          FILE="lib/screens/settings_screen.dart"
+          sed -i \
+            's/onChanged: settings\.setCompiler,/onChanged: (v) => settings.setCompiler(v!),/' \
+            "$FILE"
+          sed -i \
+            's/onChanged: settings\.setCppStandard,/onChanged: (v) => settings.setCppStandard(v!),/' \
+            "$FILE"
+          echo "=== Patched lines ==="
+          grep -n "setCompiler\|setCppStandard" "$FILE"
+
+      # ── 6. Generate full Android scaffold ────────────────────────────────
+      #   ZIP mein sirf AndroidManifest + 1 xml tha. Baaki sab missing:
       #   gradlew, MainActivity.kt, styles.xml, mipmap icons, build.gradle...
-      #   flutter create se ek complete scaffold banao (same org + project-name)
       - name: Generate Android scaffold via flutter create
         run: |
           flutter create \
@@ -54,8 +70,8 @@ jobs:
           echo "=== Scaffold android/ tree ==="
           find /tmp/scaffold/android/ -type f | sort
 
-      # ── 6. Overlay scaffold onto our project (no-clobber) ────────────────
-      #   -n flag = existing files overwrite nahi hoti
+      # ── 7. Copy scaffold into project (no-clobber) ───────────────────────
+      #   -n = existing files overwrite nahi hoti
       #   AndroidManifest.xml aur network_security_config.xml safe rahenge
       - name: Copy scaffold android/ into project
         run: |
@@ -64,7 +80,8 @@ jobs:
           echo "=== Final android/ tree ==="
           find cpp_studio/android/ -type f | sort
 
-      # ── 7. Write app-level build.gradle ──────────────────────────────────
+      # ── 8. Write app-level build.gradle ──────────────────────────────────
+      #   compileSdkVersion 35 — flutter_plugin_android_lifecycle needs 35+
       - name: Write android/app/build.gradle
         working-directory: cpp_studio
         run: |
@@ -77,7 +94,7 @@ jobs:
 
           android {
               namespace "com.example.cpp_studio"
-              compileSdkVersion 34
+              compileSdkVersion 35
               ndkVersion flutter.ndkVersion
 
               compileOptions {
@@ -92,7 +109,7 @@ jobs:
               defaultConfig {
                   applicationId "com.example.cpp_studio"
                   minSdkVersion 21
-                  targetSdkVersion 34
+                  targetSdkVersion 35
                   versionCode flutter.versionCode
                   versionName flutter.versionName
               }
@@ -113,8 +130,8 @@ jobs:
           echo "=== app/build.gradle ==="
           cat android/app/build.gradle
 
-      # ── 8. Write project-level build.gradle ──────────────────────────────
-      #   NEW Flutter plugin format — NO buildscript/classpath block
+      # ── 9. Write project-level build.gradle ──────────────────────────────
+      #   Flutter 3.16+ new plugin format — NO buildscript/classpath block
       - name: Write android/build.gradle
         working-directory: cpp_studio
         run: |
@@ -141,8 +158,8 @@ jobs:
           echo "=== android/build.gradle ==="
           cat android/build.gradle
 
-      # ── 9. Write settings.gradle ─────────────────────────────────────────
-      #   include ':app' — ye line missing thi jisse assembleRelease not found
+      # ── 10. Write settings.gradle ─────────────────────────────────────────
+      #   include ':app' — without this Gradle can't find assembleRelease task
       - name: Write android/settings.gradle
         working-directory: cpp_studio
         run: |
@@ -176,8 +193,7 @@ jobs:
           echo "=== settings.gradle ==="
           cat android/settings.gradle
 
-      # ── 10. Write gradle.properties ──────────────────────────────────────
-      #   AndroidX fix + heap size
+      # ── 11. Write gradle.properties ──────────────────────────────────────
       - name: Write android/gradle.properties
         working-directory: cpp_studio
         run: |
@@ -189,7 +205,7 @@ jobs:
           echo "=== gradle.properties ==="
           cat android/gradle.properties
 
-      # ── 11. Write gradle-wrapper.properties ──────────────────────────────
+      # ── 12. Write gradle-wrapper.properties ──────────────────────────────
       - name: Write gradle-wrapper.properties
         working-directory: cpp_studio
         run: |
@@ -204,22 +220,22 @@ jobs:
           echo "=== gradle-wrapper.properties ==="
           cat android/gradle/wrapper/gradle-wrapper.properties
 
-      # ── 12. Flutter pub get ───────────────────────────────────────────────
+      # ── 13. Flutter pub get ───────────────────────────────────────────────
       - name: Flutter pub get
         working-directory: cpp_studio
         run: flutter pub get
 
-      # ── 13. Debug tree ────────────────────────────────────────────────────
+      # ── 14. Debug tree ────────────────────────────────────────────────────
       - name: Show final android/ structure
         working-directory: cpp_studio
         run: find android/ -type f | sort
 
-      # ── 14. Analyze (non-fatal) ───────────────────────────────────────────
+      # ── 15. Analyze (non-fatal) ───────────────────────────────────────────
       - name: Flutter analyze
         working-directory: cpp_studio
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
-      # ── 15. Build split APKs ──────────────────────────────────────────────
+      # ── 16. Build split APKs ──────────────────────────────────────────────
       - name: Build split APKs
         working-directory: cpp_studio
         run: |
@@ -229,22 +245,21 @@ jobs:
             --target-platform android-arm,android-arm64,android-x64 \
             --split-per-abi
 
-      # ── 16. Build universal APK ───────────────────────────────────────────
+      # ── 17. Build universal APK ───────────────────────────────────────────
       - name: Build universal APK
         working-directory: cpp_studio
         run: flutter build apk --release --no-shrink
 
-      # ── 17. List APKs ─────────────────────────────────────────────────────
+      # ── 18. List APKs ─────────────────────────────────────────────────────
       - name: List built APKs
         run: |
           echo "=== APK files ==="
           find cpp_studio/build/app/outputs/flutter-apk/ -name "*.apk" | sort
-          echo ""
           echo "=== Sizes ==="
           find cpp_studio/build/app/outputs/flutter-apk/ -name "*.apk" \
             -exec du -sh {} \;
 
-      # ── 18. Upload split APKs ─────────────────────────────────────────────
+      # ── 19. Upload split APKs ─────────────────────────────────────────────
       - name: Upload split APKs
         uses: actions/upload-artifact@v4
         with:
@@ -252,7 +267,7 @@ jobs:
           path: cpp_studio/build/app/outputs/flutter-apk/*-release.apk
           retention-days: 30
 
-      # ── 19. Upload universal APK ──────────────────────────────────────────
+      # ── 20. Upload universal APK ──────────────────────────────────────────
       - name: Upload universal APK
         uses: actions/upload-artifact@v4
         with:
