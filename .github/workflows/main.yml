@@ -1,0 +1,272 @@
+name: Build C++ Studio APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout repo ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Unzip the project ────────────────────────────────────────────
+      - name: Unzip cpp_studio.zip
+        run: |
+          unzip cpp_studio.zip
+          echo "Contents after unzip:"
+          ls -la
+          echo "cpp_studio dir:"
+          ls -la cpp_studio/
+
+      # ── 3. Setup Java 17 ────────────────────────────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ── 4. Setup Flutter ────────────────────────────────────────────────
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: stable
+          cache: true
+
+      # ── 5. Check Flutter version ────────────────────────────────────────
+      - name: Flutter version info
+        run: flutter --version
+
+      # ── 6. Patch build.gradle (minSdk + Java 17) ────────────────────────
+      - name: Patch android/app/build.gradle
+        working-directory: cpp_studio
+        run: |
+          GRADLE_FILE="android/app/build.gradle"
+          if [ ! -f "$GRADLE_FILE" ]; then
+            echo "build.gradle not found — creating from template"
+            mkdir -p android/app
+            cat > "$GRADLE_FILE" << 'GRADLE_EOF'
+          plugins {
+              id "com.android.application"
+              id "kotlin-android"
+              id "dev.flutter.flutter-gradle-plugin"
+          }
+
+          android {
+              namespace "com.example.cpp_studio"
+              compileSdkVersion 34
+              ndkVersion flutter.ndkVersion
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+
+              defaultConfig {
+                  applicationId "com.example.cpp_studio"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode flutter.versionCode
+                  versionName flutter.versionName
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+          }
+
+          flutter {
+              source '../..'
+          }
+
+          dependencies {
+              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+          }
+          GRADLE_EOF
+          else
+            echo "build.gradle found — patching minSdkVersion and Java version"
+            # Patch minSdkVersion
+            sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' "$GRADLE_FILE"
+            sed -i 's/targetSdkVersion [0-9]*/targetSdkVersion 34/g' "$GRADLE_FILE"
+            sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 34/g' "$GRADLE_FILE"
+            # Patch Java version
+            sed -i 's/JavaVersion.VERSION_[0-9]*/JavaVersion.VERSION_17/g' "$GRADLE_FILE"
+            sed -i "s/jvmTarget = '[0-9]*'/jvmTarget = '17'/g" "$GRADLE_FILE"
+          fi
+          cat "$GRADLE_FILE"
+
+      # ── 7. Patch android/build.gradle (project level) ───────────────────
+      - name: Patch android/build.gradle (project level)
+        working-directory: cpp_studio
+        run: |
+          PROJECT_GRADLE="android/build.gradle"
+          if [ ! -f "$PROJECT_GRADLE" ]; then
+            echo "Creating project-level build.gradle"
+            cat > "$PROJECT_GRADLE" << 'PG_EOF'
+          buildscript {
+              ext.kotlin_version = '1.9.10'
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.1.0'
+                  classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+              }
+          }
+
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.buildDir = '../build'
+          subprojects {
+              project.buildDir = "${rootProject.buildDir}/${project.name}"
+          }
+          subprojects {
+              project.evaluationDependsOn(':app')
+          }
+
+          tasks.register("clean", Delete) {
+              delete rootProject.buildDir
+          }
+          PG_EOF
+          else
+            echo "Project build.gradle exists"
+            cat "$PROJECT_GRADLE"
+          fi
+
+      # ── 8. Patch gradle-wrapper.properties ──────────────────────────────
+      - name: Patch gradle wrapper properties
+        working-directory: cpp_studio
+        run: |
+          WRAPPER_PROPS="android/gradle/wrapper/gradle-wrapper.properties"
+          mkdir -p android/gradle/wrapper
+          cat > "$WRAPPER_PROPS" << 'WRAPPER_EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.3-bin.zip
+          WRAPPER_EOF
+          echo "Wrapper properties:"
+          cat "$WRAPPER_PROPS"
+
+      # ── 9. Ensure AndroidManifest has INTERNET permission ───────────────
+      - name: Verify AndroidManifest
+        working-directory: cpp_studio
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            echo "AndroidManifest found:"
+            cat "$MANIFEST"
+          else
+            echo "AndroidManifest missing — creating"
+            mkdir -p android/app/src/main
+            cat > "$MANIFEST" << 'MANIFEST_EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+              <application
+                  android:label="C++ Studio"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="false"
+                  android:enableOnBackInvokedCallback="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:taskAffinity=""
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme"/>
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <meta-data android:name="flutterEmbedding" android:value="2"/>
+              </application>
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.PROCESS_TEXT"/>
+                      <data android:mimeType="text/plain"/>
+                  </intent>
+              </queries>
+          </manifest>
+          MANIFEST_EOF
+          fi
+
+      # ── 10. Get Flutter packages ─────────────────────────────────────────
+      - name: Flutter pub get
+        working-directory: cpp_studio
+        run: flutter pub get
+
+      # ── 11. Analyze (non-fatal) ──────────────────────────────────────────
+      - name: Flutter analyze
+        working-directory: cpp_studio
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+
+      # ── 12. Build release APK ────────────────────────────────────────────
+      - name: Build release APK
+        working-directory: cpp_studio
+        run: |
+          flutter build apk \
+            --release \
+            --no-shrink \
+            --target-platform android-arm,android-arm64,android-x64 \
+            --split-per-abi
+
+      # ── 13. Also build a universal APK ───────────────────────────────────
+      - name: Build universal APK
+        working-directory: cpp_studio
+        run: flutter build apk --release --no-shrink
+
+      # ── 14. List output APKs ─────────────────────────────────────────────
+      - name: List built APKs
+        run: |
+          echo "=== Split APKs ==="
+          find cpp_studio/build/app/outputs/flutter-apk/ -name "*.apk" | sort
+          echo ""
+          echo "=== Sizes ==="
+          find cpp_studio/build/app/outputs/flutter-apk/ -name "*.apk" -exec du -sh {} \;
+
+      # ── 15. Upload split APKs as artifacts ───────────────────────────────
+      - name: Upload split APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-studio-split-apks
+          path: cpp_studio/build/app/outputs/flutter-apk/*-release.apk
+          retention-days: 30
+
+      # ── 16. Upload universal APK as artifact ─────────────────────────────
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-studio-universal-apk
+          path: cpp_studio/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
